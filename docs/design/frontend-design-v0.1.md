@@ -841,7 +841,8 @@ Q5「API Key 与提示词模板的编辑边界」原结论是「只存环境变�
 | 版本保护 | 删除时校验 | 至少保留一个版本；正在被节点使用的版本不可删除 |
 | 推荐模板 | `mars/llm/defaults.py` + 「载入推荐模板」 | 只填入编辑器，不自动落盘，避免覆盖用户已有内容 |
 
-存储位置：`<MARS_HOME 或工作目录>/.mars/secrets.json`，权限尽力设为 0600，已加入 `.gitignore`。
+存储位置：未设置 `MARS_HOME` 时为 `./.mars/secrets.json`，设置后为 `<MARS_HOME>/secrets.json`；
+权限尽力设为 0600，已加入 `.gitignore`。
 优先级：进程环境变量 > 本地文件（`os.environ.setdefault`，显式 `export` 不会被覆盖）。
 
 前端交互要点：

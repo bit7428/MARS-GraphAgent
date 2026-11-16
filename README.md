@@ -157,12 +157,12 @@ cd frontend && npm run dev                  # 终端 2 → http://127.0.0.1:5173
 | `MARS_PROMPT_VERSION` | `v1` | 默认提示词版本 |
 | `MARS_NODE_CONFIGS` | 空 | 节点级配置覆盖，JSON 字符串 |
 | `MARS_DATA_DIR` | `data/runs` | 运行产物目录 |
-| `MARS_HOME` | 当前工作目录 | 本地密钥文件根目录（`<MARS_HOME>/.mars/secrets.json`） |
+| `MARS_HOME` | 未设置 | 设置后密钥文件为 `<MARS_HOME>/secrets.json`；未设置时为 `./.mars/secrets.json` |
 
 示例：
 
 ```bash
-export MARS_LLM_API_KEY=<your-api-key>
+export MARS_LLM_API_KEY="your-api-key"
 export MARS_BASE_URL=https://api.deepseek.com/v1
 export MARS_DEFAULT_MODEL=deepseek-chat
 ```
@@ -220,7 +220,8 @@ error.json           # 仅失败运行生成
 ```
 
 - `data/runs/*` 与 `.mars/` 均已加入 `.gitignore`；删除运行数据只允许在运行结束后执行。
-- 密钥文件默认位于 `<MARS_HOME 或工作目录>/.mars/secrets.json`，接口只返回 `configured / tail / source`。
+- 密钥文件默认位于 `./.mars/secrets.json`；设置 `MARS_HOME` 后位于 `<MARS_HOME>/secrets.json`。
+  接口只返回 `configured / tail / source`。
 - `run.log` 不记录完整提示词与报告；`state.json` / `report.md` 属于用户数据，部署时需按敏感数据管理。
 - 本项目**没有登录、多租户与权限体系**。不要把实例直接暴露到公网；若需共享，请放在受控内网或反向代理鉴权之后。
 

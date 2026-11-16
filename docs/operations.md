@@ -39,7 +39,7 @@ uv run uvicorn mars.api.app:app --host 127.0.0.1 --port 8000
 | `MARS_PROMPT_VERSION` | `v1` | 默认提示词版本 |
 | `MARS_NODE_CONFIGS` | 空 | 节点级覆盖（JSON 字符串） |
 | `MARS_DATA_DIR` | `data/runs` | 运行产物目录 |
-| `MARS_HOME` | 当前工作目录 | 本地密钥根目录 |
+| `MARS_HOME` | 未设置 | 设置后密钥文件为 `<MARS_HOME>/secrets.json`；未设置时为 `./.mars/secrets.json` |
 
 生产环境建议用系统级环境变量或密钥管理服务注入，不要提交 `.env`。
 
@@ -47,7 +47,7 @@ uv run uvicorn mars.api.app:app --host 127.0.0.1 --port 8000
 
 | 项 | 说明 |
 | --- | --- |
-| 默认路径 | `<MARS_HOME 或工作目录>/.mars/secrets.json` |
+| 默认路径 | 未设置 `MARS_HOME` 时为 `./.mars/secrets.json`；设置后为 `<MARS_HOME>/secrets.json` |
 | 写入方式 | 前端「节点配置 → 设置密钥」，或 `PUT /config/secrets/{env_name}` |
 | 读取 | 启动时加载；`os.environ.setdefault`，显式环境变量优先 |
 | 响应 | 只返回 `configured` / `tail` / `source`，明文永不回传 |
