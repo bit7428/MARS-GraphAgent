@@ -271,6 +271,30 @@ async def test_delete_paused_run_is_rejected(
     assert (artifact_root / thread_id).is_dir()
 
 
+async def test_delete_persisted_run_after_restart(tmp_path: Path) -> None:
+    root = tmp_path / "runs"
+    first = create_app(
+        llm_adapter=LabeledAdapter(default_handlers()),
+        artifacts=RunArtifactStore(root),
+    )
+    async with AsyncClient(transport=ASGITransport(app=first), base_url="http://test") as http:
+        created = await http.post("/runs", json=PAYLOAD)
+        thread_id = created.json()["thread_id"]
+        await _wait(http, thread_id)
+
+    second = create_app(
+        llm_adapter=LabeledAdapter(default_handlers()),
+        artifacts=RunArtifactStore(root),
+    )
+    async with AsyncClient(transport=ASGITransport(app=second), base_url="http://test") as http:
+        response = await http.delete(f"/runs/{thread_id}/data")
+        assert response.status_code == 200
+        assert response.json()["deleted"] is True
+        assert not (root / thread_id).exists()
+        runs = (await http.get("/runs")).json()
+        assert all(item["thread_id"] != thread_id for item in runs)
+
+
 async def test_new_run_id_does_not_overwrite_existing(
     tmp_path: Path,
 ) -> None:
