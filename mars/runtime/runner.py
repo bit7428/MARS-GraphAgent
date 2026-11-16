@@ -10,6 +10,7 @@ from typing import Any, cast
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
+from mars import messages
 from mars.config.settings import NodeLLMConfig
 from mars.graph.edge_table import find_edge
 from mars.graph.state.constants import BUSINESS_FIELDS, NODE_NAMES
@@ -104,7 +105,7 @@ class RunManager:
         """按 continue / reroute:<node> / abort 恢复。"""
         record = self.get(thread_id)
         if record.status != "paused":
-            raise MarsError(f"运行状态不可恢复: {record.status}")
+            raise MarsError(messages.RUN_NOT_RESUMABLE.format(status=record.status))
         record.status = "running"
         record.pending_supplement = supplement
         await self._emit(
@@ -119,7 +120,9 @@ class RunManager:
         """运行中可动态设置/取消边断点。"""
         self._validate_breakpoints(edge_ids)
         record = self.get(thread_id)
-        record.breakpoints = set(edge_ids)
+        # 原地更新，使当前运行已捕获的集合引用立即生效
+        record.breakpoints.clear()
+        record.breakpoints.update(edge_ids)
         await self._emit(
             record,
             {"event": "breakpoints_updated", "thread_id": thread_id, "edge_ids": sorted(edge_ids)},
@@ -306,7 +309,7 @@ class RunManager:
     def _validate_breakpoints(self, edge_ids: set[str]) -> None:
         unknown = sorted(edge_id for edge_id in edge_ids if find_edge(edge_id) is None)
         if unknown:
-            raise MarsError(f"未知边: {','.join(unknown)}")
+            raise MarsError(messages.UNKNOWN_EDGE.format(ids=",".join(unknown)))
 
 
 _WRITABLE_VIEW = frozenset(

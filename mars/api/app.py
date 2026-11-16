@@ -8,6 +8,7 @@ from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from mars import messages
 from mars.api.schemas import (
     BreakpointUpdateRequest,
     EdgeView,
@@ -185,7 +186,7 @@ async def reset_node_config(node: str, request: Request) -> NodeConfigView:
 
 def _ensure_llm_node(node: str) -> None:
     if node not in LLM_NODES:
-        raise MarsError(f"not an llm node: {node}")
+        raise MarsError(messages.NOT_LLM_NODE.format(node=node))
 
 
 def _install_error_handlers(app: FastAPI) -> None:

@@ -87,6 +87,23 @@ async def test_run_breakpoint_update(client: AsyncClient) -> None:
     assert invalid.status_code == 400
 
 
+async def test_add_breakpoint_while_paused(client: AsyncClient) -> None:
+    payload = {**PAYLOAD, "breakpoints": ["user->planner"]}
+    created = await client.post("/runs", json=payload)
+    thread_id = created.json()["thread_id"]
+    await _wait(client, thread_id, status="paused")
+
+    updated = await client.post(
+        f"/runs/{thread_id}/breakpoints",
+        json={"edge_ids": ["planner->teacher"]},
+    )
+    assert updated.status_code == 200
+
+    await client.post(f"/runs/{thread_id}/resume", json={"action": "continue"})
+    data = await _wait(client, thread_id, status="paused")
+    assert data["interrupts"][0]["edge_id"] == "planner->teacher"
+
+
 async def test_invalid_create_request(client: AsyncClient) -> None:
     response = await client.post("/runs", json={"initial_prompt": "x"})
     assert response.status_code == 422

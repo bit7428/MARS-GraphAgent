@@ -7,6 +7,7 @@ from typing import Generic, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
+from mars import messages as msgs
 from mars.config.settings import NodeLLMConfig
 from mars.graph.state.errors import LLMError, StructuredOutputError
 from mars.llm.adapter import ChatAdapter, ChatMessage
@@ -71,4 +72,4 @@ def request_structured(
             prompt_version=config.prompt_version,
             attempts=attempt,
         )
-    raise StructuredOutputError(f"结构化输出失败: {type(last_error).__name__}")
+    raise StructuredOutputError(msgs.STRUCTURED_FAILED.format(error=type(last_error).__name__))

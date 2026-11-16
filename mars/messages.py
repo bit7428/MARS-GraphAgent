@@ -67,3 +67,12 @@ REROUTE_NOT_ALLOWED = "不允许改道到 {target}"
 REROUTE_CONTRACT_FAILED = "目标 {target} 契约校验失败: {codes}"
 BREAKPOINT_UNKNOWN_ACTION = "未知恢复动作"
 BREAKPOINT_BAD_PAYLOAD = "恢复载荷格式非法"
+
+# 运行与配置
+RUN_NOT_RESUMABLE = "运行状态不可恢复: {status}"
+UNKNOWN_EDGE = "未知边: {ids}"
+NOT_LLM_NODE = "不是 LLM 节点: {node}"
+LLM_MISSING_KEY = "缺少环境变量 {name}"
+LLM_CALL_FAILED = "LLM 调用失败: {error}"
+LLM_IMPORT_FAILED = "langchain-openai 未安装"
+STRUCTURED_FAILED = "结构化输出失败: {error}"

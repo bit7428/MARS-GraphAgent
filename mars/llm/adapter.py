@@ -7,6 +7,7 @@ from typing import Literal, Protocol, TypedDict, cast
 
 from pydantic import SecretStr
 
+from mars import messages as msgs
 from mars.config.settings import NodeLLMConfig
 from mars.graph.state.errors import LLMError
 
@@ -49,12 +50,12 @@ class OpenAICompatAdapter:
         """调用 OpenAI 兼容接口并返回文本。"""
         api_key = os.environ.get(config.api_key_env)
         if not api_key:
-            raise LLMError(f"缺少环境变量 {config.api_key_env}")
+            raise LLMError(msgs.LLM_MISSING_KEY.format(name=config.api_key_env))
         try:
             from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
             from langchain_openai import ChatOpenAI
         except ImportError as exc:  # pragma: no cover - 依赖缺失属环境问题
-            raise LLMError("langchain-openai 未安装") from exc
+            raise LLMError(msgs.LLM_IMPORT_FAILED) from exc
 
         llm = ChatOpenAI(
             model=config.model,
@@ -73,7 +74,7 @@ class OpenAICompatAdapter:
         try:
             response = llm.invoke(payload)
         except Exception as exc:
-            raise LLMError(f"LLM 调用失败: {type(exc).__name__}") from exc
+            raise LLMError(msgs.LLM_CALL_FAILED.format(error=type(exc).__name__)) from exc
         content = response.content
         text = content if isinstance(content, str) else str(content)
         return Completion(text=text, model=config.model)
