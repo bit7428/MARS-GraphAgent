@@ -30,7 +30,10 @@ class _PlannerOutput(BaseModel):
 @node_contract(
     node="planner",
     required=("initial_prompt", "optimization_goal"),
-    optional=("optimized_prompt", "subtasks"),
+    conditional_optional=(
+        ("optimized_prompt", "tsc"),
+        ("subtasks", "tsc"),
+    ),
     writes=("working_prompt", "subtasks"),
 )
 def run_planner(state: GraphState, config: RunnableConfig) -> dict[str, Any]:

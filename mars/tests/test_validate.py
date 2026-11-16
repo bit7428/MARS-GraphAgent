@@ -81,11 +81,62 @@ def test_conditional_missing_fields() -> None:
         "execution_score",
         tsc_count=1,
     )
-    issues = validate_state(state, required=(), optional=())
+    issues = validate_state(
+        state,
+        required=(),
+        optional=(),
+        conditional=(
+            "optimized_prompt",
+            "subtasks",
+            "questions",
+            "heuristic_score",
+            "execution_score",
+        ),
+    )
     codes = _codes(issues)
     assert "E2-CONDITIONAL-MISSING-OPTIMIZED-PROMPT" in codes
     assert "E2-CONDITIONAL-MISSING-SUBTASK" in codes
     assert "E2-CONDITIONAL-MISSING-QUESTION" in codes
+
+
+def test_conditional_fields_are_caller_gated() -> None:
+    """未传入 conditional 时不得自行推断循环缺失（否则首轮必然误报）。"""
+    state = without_state(
+        "optimized_prompt",
+        "subtasks",
+        "questions",
+        "heuristic_score",
+        "execution_score",
+        tsc_count=1,
+    )
+    issues = validate_state(state, required=(), optional=())
+    assert not any(code.startswith("E2-CONDITIONAL") for code in _codes(issues))
+
+
+def test_blank_required_input_on_manager_wake() -> None:
+    state = cast(GraphState, {"initial_prompt": "   ", "optimization_goal": "目标"})
+    issues = validate_state(
+        state,
+        required=(),
+        optional=(),
+        conditional=("initial_prompt",),
+        blank_as_missing=("initial_prompt",),
+    )
+    assert "E2-CONDITIONAL-MISSING-INITIAL-PROMPT" in _codes(issues)
+
+
+def test_empty_editing_slot_allowed_during_loop() -> None:
+    """Critic 置空 3、Manager 清空 2/3 是文档定义的正常状态。"""
+    state = cast(GraphState, {"working_prompt": "", "optimized_prompt": "", "tsc_count": 1})
+    issues = validate_state(state, required=(), optional=())
+    assert "E2-SCHEMA-WORKING-PROMPT" not in _codes(issues)
+    assert "E2-SCHEMA-OPTIMIZED-PROMPT" not in _codes(issues)
+
+
+def test_empty_prompt_still_invalid_before_loop() -> None:
+    state = cast(GraphState, {"optimized_prompt": "", "tsc_count": 0, "m_count": 0})
+    issues = validate_state(state, required=(), optional=())
+    assert "E2-SCHEMA-OPTIMIZED-PROMPT" in _codes(issues)
 
 
 def test_counter_rejects_bool_and_negative() -> None:

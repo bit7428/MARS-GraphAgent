@@ -192,8 +192,15 @@ def validate_state(
     *,
     required: tuple[str, ...],
     optional: tuple[str, ...],
+    conditional: tuple[str, ...] = (),
+    blank_as_missing: tuple[str, ...] = (),
 ) -> list[StateIssue]:
-    """纯函数校验；不修改传入状态。"""
+    """纯函数校验；不修改传入状态。
+
+    `conditional` 由节点契约按文档前提决定是否传入：只有对应的循环 / 回退
+    上下文成立时，才把字段列进来。这样 User 首次初始化、Planner 首轮规划、
+    Critic 首轮评分都不会把「本就不该存在」的待选字段报成 2 级错误。
+    """
     raw = cast(Mapping[str, Any], state)
     issues: list[StateIssue] = []
 
@@ -204,13 +211,31 @@ def validate_state(
     for field in optional:
         if not _present(raw, field):
             issues.append(_issue(E2_MISSING[field], 2, field, messages.MISSING_OPTIONAL))
+    for field in conditional:
+        value = raw.get(field)
+        blank = field in blank_as_missing and isinstance(value, str) and not value.strip()
+        if not _present(raw, field) or blank:
+            code = E2_CONDITIONAL_MISSING.get(field, E2_MISSING[field])
+            issues.append(_issue(code, 2, field, messages.CONDITIONAL_MISSING))
 
     # 2. 类型 / 3. 取值范围（按文档字段顺序）
+    loop_active = _loop_active(raw)
     for field in BUSINESS_FIELDS:
-        if field in raw and raw[field] is not None:
-            issue = _format_issue(field, raw[field])
-            if issue is not None:
-                issues.append(issue)
+        if field not in raw or raw[field] is None:
+            continue
+        value = raw[field]
+        # 2/3 是 Critic 与 Manager 文档定义的可编辑槽位：进入下一轮 / 回退时
+        # 会被显式置空，属于正常状态，不应报格式错误。
+        if (
+            field in {"working_prompt", "optimized_prompt"}
+            and loop_active
+            and isinstance(value, str)
+            and not value.strip()
+        ):
+            continue
+        issue = _format_issue(field, value)
+        if issue is not None:
+            issues.append(issue)
     for key, allowed in ROUTE_VALUES.items():
         if key in raw and not _valid_route(raw[key], allowed):
             issues.append(_issue(E2_SCHEMA_ROUTE, 2, key, messages.SCHEMA_ROUTE))
@@ -220,35 +245,14 @@ def validate_state(
         if key not in _KNOWN_FIELDS:
             issues.append(_issue(E2_UNKNOWN_FIELD, 2, key, messages.UNKNOWN_STATE_FIELD))
 
-    issues.extend(_cross_field_issues(raw))
     return issues
 
 
-def _cross_field_issues(raw: Mapping[str, Any]) -> list[StateIssue]:
-    """条件性待选缺失：10/11 非 0 时 3/5/6/7/8 必须可用。"""
-    issues: list[StateIssue] = []
-    counters_active = any(
+def _loop_active(raw: Mapping[str, Any]) -> bool:
+    """10/11 任一大于 0 表示优化已进入循环或回退阶段。"""
+    return any(
         _is_int(raw.get(key)) and cast(int, raw[key]) > 0 for key in ("tsc_count", "m_count")
     )
-    if not counters_active:
-        return issues
-    for field in (
-        "optimized_prompt",
-        "subtasks",
-        "questions",
-        "heuristic_score",
-        "execution_score",
-    ):
-        if not _present(raw, field):
-            issues.append(
-                _issue(
-                    E2_CONDITIONAL_MISSING[field],
-                    2,
-                    field,
-                    messages.CONDITIONAL_MISSING,
-                )
-            )
-    return issues
 
 
 def fatal_issues(issues: list[StateIssue]) -> list[StateIssue]:

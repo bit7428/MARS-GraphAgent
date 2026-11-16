@@ -40,6 +40,8 @@ E2_SCHEMA: dict[str, str] = {
 }
 
 E2_CONDITIONAL_MISSING: dict[str, str] = {
+    "initial_prompt": "E2-CONDITIONAL-MISSING-INITIAL-PROMPT",
+    "optimization_goal": "E2-CONDITIONAL-MISSING-OPTIMIZATION-GOAL",
     "optimized_prompt": "E2-CONDITIONAL-MISSING-OPTIMIZED-PROMPT",
     "subtasks": "E2-CONDITIONAL-MISSING-SUBTASK",
     "questions": "E2-CONDITIONAL-MISSING-QUESTION",

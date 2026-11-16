@@ -34,13 +34,13 @@ class _TeacherOutput(BaseModel):
 @node_contract(
     node="teacher",
     required=("working_prompt", "subtasks"),
-    optional=(
-        "questions",
-        "heuristic_score",
-        "execution_score",
-        "initial_prompt",
-        "optimized_prompt",
-        "optimization_goal",
+    conditional_optional=(
+        ("initial_prompt", "manager"),
+        ("optimization_goal", "manager"),
+        ("optimized_prompt", "tsc"),
+        ("questions", "tsc"),
+        ("heuristic_score", "tsc"),
+        ("execution_score", "tsc"),
     ),
     writes=("questions",),
 )

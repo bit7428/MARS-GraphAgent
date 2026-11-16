@@ -64,7 +64,11 @@ class _Evaluation:
 @node_contract(
     node="critic",
     required=("optimized_prompt", "optimization_goal", "subtasks", "questions"),
-    optional=("working_prompt", "heuristic_score", "execution_score"),
+    conditional_optional=(
+        ("working_prompt", "tsc"),
+        ("heuristic_score", "tsc"),
+        ("execution_score", "tsc"),
+    ),
     writes=(
         "subtasks",
         "questions",

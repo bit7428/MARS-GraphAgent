@@ -5,7 +5,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from types import MappingProxyType
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from langchain_core.runnables import RunnableConfig
 
@@ -22,15 +22,24 @@ from mars.graph.state.validate import fatal_issues, validate_state
 from mars.utils.clock import Clock, IdGenerator, SequentialIdGenerator, SystemClock
 
 NodeFn = Callable[[GraphState, RunnableConfig], dict[str, Any]]
+ConditionalTrigger = Literal["tsc", "manager"]
 
 
 @dataclass(frozen=True)
 class NodeContract:
-    """单个节点的必填、待选、业务写入与副作用写入声明。"""
+    """单个节点的必填、待选、业务写入与副作用写入声明。
+
+    `conditional_optional` 描述文档中的「条件性待选缺失」：字段本身可不存在，
+    只有对应上下文成立时缺失才算 2 级错误。`tsc` 表示 10 大于 0（TSC 循环
+    已启动），`manager` 表示由 Manager 回退唤醒。M 回退会清空上游产物，
+    属于文档定义的正常复位，不在此列。
+    """
 
     node: str
     required: tuple[str, ...] = ()
     optional: tuple[str, ...] = ()
+    conditional_optional: tuple[tuple[str, ConditionalTrigger], ...] = ()
+    blank_as_missing: tuple[str, ...] = ()
     writes: tuple[str, ...] = ()
     side_effect_writes: tuple[str, ...] = ()
     route_key: str | None = None
@@ -41,25 +50,37 @@ CONTRACTS: Mapping[str, NodeContract] = MappingProxyType(
     {
         "user": NodeContract(
             node="user",
-            optional=("initial_prompt", "optimization_goal"),
+            # 首次初始化不校验 1/4；只有 Manager 回退唤醒时才要求用户补齐。
+            conditional_optional=(
+                ("initial_prompt", "manager"),
+                ("optimization_goal", "manager"),
+            ),
+            blank_as_missing=("initial_prompt", "optimization_goal"),
             writes=("initial_prompt", "optimization_goal"),
         ),
         "planner": NodeContract(
             node="planner",
             required=("initial_prompt", "optimization_goal"),
-            optional=("optimized_prompt", "subtasks"),
+            # 3/5 是继续优化时的参考；Manager 回退会重置 tsc 并清空它们，
+            # 属于正常复位，因此只在 TSC 进行中缺失时才算异常。
+            conditional_optional=(
+                ("optimized_prompt", "tsc"),
+                ("subtasks", "tsc"),
+            ),
             writes=("working_prompt", "subtasks"),
         ),
         "teacher": NodeContract(
             node="teacher",
             required=("working_prompt", "subtasks"),
-            optional=(
-                "questions",
-                "heuristic_score",
-                "execution_score",
-                "initial_prompt",
-                "optimized_prompt",
-                "optimization_goal",
+            # 1/4 仅在 Manager 唤醒时要求；3/6/7/8 是 TSC 循环内的产物，
+            # 回退到 User/Planner 后重新生成，缺失不算异常。
+            conditional_optional=(
+                ("initial_prompt", "manager"),
+                ("optimization_goal", "manager"),
+                ("optimized_prompt", "tsc"),
+                ("questions", "tsc"),
+                ("heuristic_score", "tsc"),
+                ("execution_score", "tsc"),
             ),
             writes=("questions",),
         ),
@@ -72,7 +93,12 @@ CONTRACTS: Mapping[str, NodeContract] = MappingProxyType(
         "critic": NodeContract(
             node="critic",
             required=("optimized_prompt", "optimization_goal", "subtasks", "questions"),
-            optional=("working_prompt", "heuristic_score", "execution_score"),
+            # 首轮评分时 7/8 尚不存在；只有进入 TSC 第二轮才要求上一轮评分可用。
+            conditional_optional=(
+                ("working_prompt", "tsc"),
+                ("heuristic_score", "tsc"),
+                ("execution_score", "tsc"),
+            ),
             writes=(
                 "subtasks",
                 "questions",
@@ -276,6 +302,18 @@ def _assert_contract(
         raise CodingContractError(f"{node}: 必须追加恰好一条 trace")
 
 
+def _counter(state: GraphState, key: str) -> int:
+    value = state.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _conditional_active(trigger: ConditionalTrigger, state: GraphState) -> bool:
+    """按文档前提判断条件性待选校验是否生效。"""
+    if trigger == "manager":
+        return _counter(state, "m_count") > 0
+    return _counter(state, "tsc_count") > 0
+
+
 def _execute(
     contract: NodeContract,
     fn: NodeFn,
@@ -283,7 +321,18 @@ def _execute(
     config: RunnableConfig,
 ) -> dict[str, Any]:
     before = copy.deepcopy(dict(state))
-    issues = validate_state(state, required=contract.required, optional=contract.optional)
+    conditional = tuple(
+        field
+        for field, trigger in contract.conditional_optional
+        if _conditional_active(trigger, state)
+    )
+    issues = validate_state(
+        state,
+        required=contract.required,
+        optional=contract.optional,
+        conditional=conditional,
+        blank_as_missing=contract.blank_as_missing,
+    )
     fatal = fatal_issues(issues)
     if fatal:
         raise FatalStateError(contract.node, fatal)
@@ -298,6 +347,8 @@ def node_contract(
     node: str,
     required: tuple[str, ...] = (),
     optional: tuple[str, ...] = (),
+    conditional_optional: tuple[tuple[str, ConditionalTrigger], ...] = (),
+    blank_as_missing: tuple[str, ...] = (),
     writes: tuple[str, ...] = (),
     side_effect_writes: tuple[str, ...] = (),
     route_key: str | None = None,
@@ -308,6 +359,8 @@ def node_contract(
         node=node,
         required=required,
         optional=optional,
+        conditional_optional=conditional_optional,
+        blank_as_missing=blank_as_missing,
         writes=writes,
         side_effect_writes=side_effect_writes,
         route_key=route_key,

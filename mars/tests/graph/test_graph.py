@@ -43,6 +43,10 @@ def _node_sequence(state: GraphState) -> list[str]:
     ]
 
 
+def _issues(state: GraphState) -> list[Any]:
+    return [issue for trace in state.get("trace", []) for issue in trace.get("issues", [])]
+
+
 def test_happy_path_reaches_output() -> None:
     adapter = LabeledAdapter(default_handlers())
     _, _, result = _run(adapter)
@@ -59,6 +63,7 @@ def test_happy_path_reaches_output() -> None:
     assert result["route_target"] == "output"
     assert result["report_md"]
     assert result["performance_criteria"]
+    assert _issues(result) == []
 
 
 def test_tsc_limit_routes_to_target() -> None:
@@ -71,6 +76,7 @@ def test_tsc_limit_routes_to_target() -> None:
     # 初始一轮 + TSC_MAX 轮回边，共 TSC_MAX+1 次 Teacher/Critic
     assert adapter.calls.count("teacher") == TSC_MAX + 1
     assert adapter.calls.count("critic") == TSC_MAX + 1
+    assert _issues(result) == []
 
 
 def test_m_limit_forces_failure_report() -> None:
@@ -83,6 +89,7 @@ def test_m_limit_forces_failure_report() -> None:
     report = result.get("report_md") or ""
     assert "M 超限/未通过验收" in report
     assert adapter.calls.count("manager") == M_MAX
+    assert _issues(result) == []
 
 
 @pytest.mark.parametrize("manager_target", ["user", "planner"])
@@ -102,6 +109,7 @@ def test_manager_rollback_to_user_or_planner(manager_target: str) -> None:
     assert result["optimized_prompt"] == "学生优化后的提示词"
     assert adapter.calls.count("manager") == 1
     assert adapter.calls.count("planner") == 2
+    assert _issues(result) == []
 
 
 def test_manager_rollback_to_teacher_keeps_tsc() -> None:

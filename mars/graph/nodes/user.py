@@ -25,7 +25,11 @@ def _apply(existing: str, incoming: str, mode: str) -> str:
 
 @node_contract(
     node="user",
-    optional=("initial_prompt", "optimization_goal"),
+    conditional_optional=(
+        ("initial_prompt", "manager"),
+        ("optimization_goal", "manager"),
+    ),
+    blank_as_missing=("initial_prompt", "optimization_goal"),
     writes=("initial_prompt", "optimization_goal"),
 )
 def run_user(state: GraphState, config: RunnableConfig) -> dict[str, Any]:
