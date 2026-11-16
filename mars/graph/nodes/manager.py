@@ -170,15 +170,15 @@ def _cleanup_for(state: GraphState, target: ManagerTarget) -> tuple[dict[str, An
         }
         return update, ["clear:2/3/5/6/7/8", "reset:tsc_count"]
     if target == "planner":
+        # 文档未要求清空 2，保留供 Planner 参考
         update = {
-            "working_prompt": "",
             "optimized_prompt": "",
             "questions": [],
             "heuristic_score": None,
             "execution_score": None,
             "tsc_count": 0,
         }
-        return update, ["clear:2/3/6/7/8", "keep:subtasks", "reset:tsc_count"]
+        return update, ["clear:3/6/7/8", "keep:subtasks", "reset:tsc_count"]
     update = {
         "working_prompt": state["optimized_prompt"],
         "optimized_prompt": "",

@@ -39,6 +39,7 @@ def test_manager_rollback_to_planner_keeps_subtasks() -> None:
     assert result["m_count"] == 1
     # 保留意味着不写该键，而不是写成空表
     assert "subtasks" not in result
+    assert "working_prompt" not in result
     assert result["questions"] == []
     assert result["optimized_prompt"] == ""
     assert result["tsc_count"] == 0

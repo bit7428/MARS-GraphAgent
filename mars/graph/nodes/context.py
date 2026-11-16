@@ -86,8 +86,12 @@ def low_dimension_hint(state: GraphState) -> str:
         detail = cast(ScoreDetail | None, state.get(key))
         if detail is None or detail["score"] >= LOW_SCORE_THRESHOLD:
             continue
-        low = [name for name, value in detail.get("dimensions", {}).items() if value < 60]
-        hints.append(f"{label}低于60，低分维度：{'、'.join(low) or '未标注'}")
+        low = [
+            name
+            for name, value in detail.get("dimensions", {}).items()
+            if value < LOW_SCORE_THRESHOLD
+        ]
+        hints.append(f"{label}低于{LOW_SCORE_THRESHOLD}，低分维度：{'、'.join(low) or '未标注'}")
     return "；".join(hints) if hints else "无"
 
 
