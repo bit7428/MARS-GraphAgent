@@ -9,8 +9,10 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from mars.api.app import create_app
+from mars.config.secrets import SecretStore
+from mars.llm import prompts as prompt_module
 from mars.runtime.persistence import RunArtifactStore
-from mars.tests.fixtures.fakes import LabeledAdapter, default_handlers
+from mars.tests.fixtures.fakes import LabeledAdapter, ScriptedAdapter, default_handlers
 
 CRITERIA = [{"name": "正确性", "threshold": 0.9, "comparator": "gte"}]
 PAYLOAD = {
@@ -125,7 +127,7 @@ async def test_node_configs(client: AsyncClient) -> None:
     nodes = listed.json()
     assert len(nodes) == 6
     assert all("api_key" not in node for node in nodes)
-    assert all(node["available_versions"] == ["v1"] for node in nodes)
+    assert all("v1" in node["available_versions"] for node in nodes)
 
     updated = await client.patch(
         "/config/nodes/planner",
@@ -148,8 +150,9 @@ async def test_node_configs(client: AsyncClient) -> None:
 
 async def test_run_list_and_meta(client: AsyncClient) -> None:
     meta = (await client.get("/meta")).json()
-    assert meta["demo"] is False
+    assert "demo" not in meta
     assert meta["tsc_max"] == 5
+    assert meta["secret_path"].endswith("secrets.json")
 
     created = await client.post("/runs", json={**PAYLOAD, "name": "清单测试"})
     thread_id = created.json()["thread_id"]
@@ -319,3 +322,92 @@ async def test_new_run_id_does_not_overwrite_existing(
 
     assert (root / first_id / "report.md").is_file()
     assert (root / second_id / "report.md").is_file()
+
+
+def _isolated_app(tmp_path: Path, adapter: object) -> Any:
+    return create_app(
+        llm_adapter=adapter,
+        artifacts=RunArtifactStore(tmp_path / "runs"),
+        secrets=SecretStore(tmp_path / "secrets.json"),
+    )
+
+
+async def test_secret_status_never_returns_plaintext(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = "MARS_TEST_API_KEY"
+    # 本机 .mars/secrets.json 会在导入 app 时注入环境变量；测试必须隔离。
+    monkeypatch.delenv("MARS_LLM_API_KEY", raising=False)
+    app = _isolated_app(tmp_path, LabeledAdapter(default_handlers()))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as http:
+        initial = (await http.get("/config/secrets")).json()
+        assert {item["env_name"] for item in initial} == {"MARS_LLM_API_KEY"}
+        assert all(item["configured"] is False for item in initial)
+
+        saved = await http.put(
+            f"/config/secrets/{env}",
+            json={"api_key": "test-key-not-real-123456"},
+        )
+        assert saved.status_code == 200
+        body = saved.json()
+        assert body["configured"] is True
+        assert body["tail"] == "····3456"
+        assert body["used_by"] == []
+        assert "test-key-not-real" not in str(body)
+
+        cleared = await http.delete(f"/config/secrets/{env}")
+        assert cleared.json()["configured"] is False
+
+
+async def test_prompt_version_editing(tmp_path: Path) -> None:
+    root = tmp_path / "prompts"
+    (root / "planner").mkdir(parents=True)
+    (root / "planner" / "v1.md").write_text("原始模板", encoding="utf-8")
+    original_root = prompt_module._PROMPT_ROOT
+    prompt_module._PROMPT_ROOT = root
+    prompt_module.load_prompt.cache_clear()
+    try:
+        app = _isolated_app(tmp_path, LabeledAdapter(default_handlers()))
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as http:
+            current = (await http.get("/config/nodes/planner/prompt")).json()
+            assert current["version"] == "v1"
+            assert current["content"] == "原始模板"
+            assert current["recommended"]
+
+            created = await http.put(
+                "/config/nodes/planner/prompt",
+                json={"version": "v2", "content": "新模板"},
+            )
+            assert created.status_code == 200
+            assert created.json()["versions"] == ["v1", "v2"]
+
+            reloaded = (await http.get("/config/nodes/planner/prompt?version=v2")).json()
+            assert reloaded["content"] == "新模板"
+
+            in_use = await http.delete("/config/nodes/planner/prompt?version=v1")
+            assert in_use.status_code == 400
+
+            switched = await http.patch(
+                "/config/nodes/planner",
+                json={"prompt_version": "v2"},
+            )
+            assert switched.status_code == 200
+
+            removed = await http.delete("/config/nodes/planner/prompt?version=v1")
+            assert removed.status_code == 200
+            assert removed.json()["versions"] == ["v2"]
+
+            last_one = await http.delete("/config/nodes/planner/prompt?version=v2")
+            assert last_one.status_code == 400
+    finally:
+        prompt_module._PROMPT_ROOT = original_root
+        prompt_module.load_prompt.cache_clear()
+
+
+async def test_node_connection_probe(tmp_path: Path) -> None:
+    app = _isolated_app(tmp_path, ScriptedAdapter(["pong"]))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as http:
+        result = (await http.post("/config/nodes/planner/test")).json()
+        assert result["ok"] is True
+        assert result["message"] == "pong"

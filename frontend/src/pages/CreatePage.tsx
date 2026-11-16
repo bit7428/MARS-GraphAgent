@@ -3,10 +3,10 @@ import type { ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { api } from "../api/client";
-import type { Comparator, Criterion } from "../api/types";
+import type { Comparator, Criterion, SecretStatus } from "../api/types";
 import { Icon } from "../components/Icons";
 import { Badge, toast } from "../components/ui";
-import { useEdges, useMeta, useNodeConfigs } from "../hooks/useCatalog";
+import { useEdges, useNodeConfigs } from "../hooks/useCatalog";
 import { comparatorLabel, nodeLabel } from "../utils/format";
 
 const DRAFT_KEY = "mars.draft.v1";
@@ -58,7 +58,6 @@ function loadDraft(): Draft {
 export function CreatePage(): ReactNode {
   const navigate = useNavigate();
   const [params] = useSearchParams();
-  const meta = useMeta();
   const { edges } = useEdges();
   const { configs } = useNodeConfigs();
   const [draft, setDraft] = useState<Draft>(loadDraft);
@@ -66,6 +65,20 @@ export function CreatePage(): ReactNode {
   const [starting, setStarting] = useState(false);
   const [showEdges, setShowEdges] = useState(false);
   const [copiedFrom, setCopiedFrom] = useState<string | null>(null);
+  const [secrets, setSecrets] = useState<SecretStatus[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    api
+      .listSecrets()
+      .then((items) => {
+        if (active) setSecrets(items);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     const from = params.get("from");
@@ -119,8 +132,11 @@ export function CreatePage(): ReactNode {
     if (draft.m_max < 1) blocking.push("M 上限必须 ≥ 1");
     const unset = configs.filter((config) => !config.api_key_env);
     if (unset.length) warnings.push(`${unset.length} 个节点未设置 API Key 环境变量`);
+    if (secrets.length > 0 && secrets.every((item) => !item.configured)) {
+      blocking.push("未配置任何可用的 API Key：请先在「节点配置」设置密钥，或导出对应环境变量");
+    }
     return { blocking, warnings };
-  }, [draft, configs]);
+  }, [draft, configs, secrets]);
 
   const start = async () => {
     if (issues.blocking.length) {
@@ -451,13 +467,6 @@ export function CreatePage(): ReactNode {
               <Icon name="settings" size={13} />
               去节点配置
             </button>
-
-            {meta?.demo ? (
-              <p className="demo-note">
-                <Icon name="spark" size={12} />
-                演示模式：使用内置样例模型，无需 API Key
-              </p>
-            ) : null}
 
             <div className="criteria-preview">
               <h3 className="card__subtitle">验收口径</h3>

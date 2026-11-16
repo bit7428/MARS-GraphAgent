@@ -1,7 +1,8 @@
 """FastAPI 入口：DTO 转换、事件流与断点控制。"""
 
 import json
-import os
+import re
+import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, cast
@@ -11,30 +12,45 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from mars import messages
 from mars.api.schemas import (
     BreakpointUpdateRequest,
+    ConnectionTestView,
     DeleteRunDataView,
     EdgeView,
     LogView,
     NodeConfigUpdate,
     NodeConfigView,
+    PromptView,
+    PromptWriteRequest,
     ReportView,
     ResumeRequest,
     RunCreated,
     RunCreateRequest,
     RunSummary,
+    SecretSetRequest,
+    SecretStatusView,
     StateView,
 )
+from mars.config.secrets import SecretStore
 from mars.config.settings import NodeConfigStore, NodeOverride, load_settings
 from mars.graph.builder import build_graph
 from mars.graph.edge_table import EDGE_TABLE
 from mars.graph.state.constants import LLM_NODES, M_MAX, TSC_MAX
 from mars.graph.state.errors import MarsError, RunNotFoundError
 from mars.graph.state.models import PerformanceCriterion
-from mars.llm.demo import DemoAdapter
-from mars.llm.prompts import PromptNotFoundError, load_prompt
+from mars.llm.adapter import ChatMessage, OpenAICompatAdapter
+from mars.llm.defaults import recommended_template
+from mars.llm.prompts import (
+    PromptNotFoundError,
+    delete_prompt,
+    list_versions,
+    load_prompt,
+    prompt_root,
+    save_prompt,
+)
 from mars.runtime.breakpoints import make_gate
 from mars.runtime.checkpoint import build_checkpointer
 from mars.runtime.persistence import RunArtifactStore, normalized_status
@@ -50,13 +66,13 @@ class HealthView(BaseModel):
 
 
 class MetaView(BaseModel):
-    """运行环境元信息，供前端提示演示模式与默认上限。"""
+    """运行环境元信息，供前端提示数据目录与默认上限。"""
 
-    demo: bool
-    step_delay: float
     tsc_max: int
     m_max: int
     data_dir: str
+    secret_path: str
+    prompt_root: str
 
 
 def _manager(request: Request) -> RunManager:
@@ -65,6 +81,10 @@ def _manager(request: Request) -> RunManager:
 
 def _store(request: Request) -> NodeConfigStore:
     return cast(NodeConfigStore, request.app.state.node_configs)
+
+
+def _secrets(request: Request) -> SecretStore:
+    return cast(SecretStore, request.app.state.secrets)
 
 
 def _artifacts(request: Request) -> RunArtifactStore:
@@ -85,11 +105,11 @@ async def health() -> HealthView:
 async def meta(request: Request) -> MetaView:
     """返回演示模式与默认循环上限。"""
     return MetaView(
-        demo=bool(getattr(request.app.state, "demo", False)),
-        step_delay=float(getattr(request.app.state, "step_delay", 0.0)),
         tsc_max=TSC_MAX,
         m_max=M_MAX,
         data_dir=str(getattr(request.app.state, "data_dir", "data/runs")),
+        secret_path=str(_secrets(request).path),
+        prompt_root=str(prompt_root()),
     )
 
 
@@ -126,7 +146,6 @@ async def create_run(payload: RunCreateRequest, request: Request) -> RunCreated:
         name=payload.name or payload.initial_prompt.strip().splitlines()[0][:24],
         tsc_max=payload.tsc_max,
         m_max=payload.m_max,
-        step_delay=cast(float, request.app.state.step_delay),
     )
     return RunCreated(thread_id=record.thread_id)
 
@@ -288,6 +307,143 @@ async def reset_node_config(node: str, request: Request) -> NodeConfigView:
     return NodeConfigView.from_config(node, config)
 
 
+_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _secret_view(
+    store: NodeConfigStore,
+    secrets: SecretStore,
+    env_name: str,
+) -> SecretStatusView:
+    """组装密钥状态；只包含可公开字段。"""
+    status = secrets.status(env_name)
+    used_by = [node for node in LLM_NODES if store.node_config(node).api_key_env == env_name]
+    return SecretStatusView(
+        env_name=env_name,
+        configured=status.configured,
+        tail=status.tail,
+        source=status.source,
+        used_by=used_by,
+    )
+
+
+@router.get("/config/secrets", response_model=list[SecretStatusView])
+async def list_secrets(request: Request) -> list[SecretStatusView]:
+    """列出当前节点引用到的密钥状态，永不返回明文。"""
+    store = _store(request)
+    secrets = _secrets(request)
+    names = sorted({store.node_config(node).api_key_env for node in LLM_NODES})
+    return [_secret_view(store, secrets, name) for name in names]
+
+
+@router.put("/config/secrets/{env_name}", response_model=SecretStatusView)
+async def set_secret(
+    env_name: str,
+    payload: SecretSetRequest,
+    request: Request,
+) -> SecretStatusView:
+    """写入密钥：立即生效并落盘，响应只给尾号。"""
+    _ensure_env_name(env_name)
+    try:
+        _secrets(request).set(env_name, payload.api_key)
+    except ValueError as exc:
+        raise MarsError(str(exc)) from exc
+    return _secret_view(_store(request), _secrets(request), env_name)
+
+
+@router.delete("/config/secrets/{env_name}", response_model=SecretStatusView)
+async def clear_secret(env_name: str, request: Request) -> SecretStatusView:
+    """清除密钥：移除本地记录并弹出进程环境变量。"""
+    _ensure_env_name(env_name)
+    _secrets(request).clear(env_name)
+    return _secret_view(_store(request), _secrets(request), env_name)
+
+
+@router.get("/config/nodes/{node}/prompt", response_model=PromptView)
+async def get_prompt(
+    node: str,
+    request: Request,
+    version: str | None = None,
+) -> PromptView:
+    """读取某个版本的提示词模板。"""
+    _ensure_llm_node(node)
+    versions = list_versions(node)
+    target = version or _store(request).node_config(node).prompt_version
+    if target not in versions:
+        raise MarsError(f"提示词版本不存在: {node}/{target}")
+    return PromptView(
+        node=node,
+        version=target,
+        content=load_prompt(node, target),
+        versions=versions,
+        recommended=recommended_template(node),
+    )
+
+
+@router.put("/config/nodes/{node}/prompt", response_model=PromptView)
+async def put_prompt(
+    node: str,
+    payload: PromptWriteRequest,
+    request: Request,
+) -> PromptView:
+    """写入或覆盖模板；写入后立即失效读取缓存。"""
+    _ensure_llm_node(node)
+    try:
+        save_prompt(node, payload.version, payload.content)
+    except PromptNotFoundError as exc:
+        raise MarsError(str(exc)) from exc
+    return await get_prompt(node, request, payload.version)
+
+
+@router.delete("/config/nodes/{node}/prompt", response_model=PromptView)
+async def remove_prompt(node: str, request: Request, version: str) -> PromptView:
+    """删除模板版本；至少保留一个且不可删除在用版本。"""
+    _ensure_llm_node(node)
+    versions = list_versions(node)
+    if version not in versions:
+        raise MarsError(f"提示词版本不存在: {node}/{version}")
+    if len(versions) <= 1:
+        raise MarsError("至少保留一个提示词版本")
+    if _store(request).node_config(node).prompt_version == version:
+        raise MarsError("该版本正在被当前节点使用，请先切换版本再删除")
+    try:
+        delete_prompt(node, version)
+    except PromptNotFoundError as exc:
+        raise MarsError(str(exc)) from exc
+    remaining = list_versions(node)
+    return await get_prompt(node, request, remaining[-1])
+
+
+@router.post("/config/nodes/{node}/test", response_model=ConnectionTestView)
+async def test_node(node: str, request: Request) -> ConnectionTestView:
+    """用最短提示词验证模型与密钥是否可用。"""
+    _ensure_llm_node(node)
+    config = _store(request).node_config(node)
+    adapter = getattr(request.app.state, "llm_adapter", None) or OpenAICompatAdapter()
+    payload: list[ChatMessage] = [{"role": "user", "content": "ping"}]
+    started = time.perf_counter()
+    try:
+        completion = await run_in_threadpool(adapter.complete, payload, config)
+    except Exception as exc:  # 供应商异常统一转成可读结果
+        return ConnectionTestView(
+            ok=False,
+            model=config.model,
+            latency_ms=round((time.perf_counter() - started) * 1000, 1),
+            message=f"{type(exc).__name__}: {exc}"[:240],
+        )
+    return ConnectionTestView(
+        ok=True,
+        model=completion.model,
+        latency_ms=round((time.perf_counter() - started) * 1000, 1),
+        message=str(completion.text)[:120],
+    )
+
+
+def _ensure_env_name(env_name: str) -> None:
+    if not _ENV_NAME.match(env_name):
+        raise MarsError(f"非法环境变量名: {env_name}")
+
+
 def _ensure_llm_node(node: str) -> None:
     if node not in LLM_NODES:
         raise MarsError(messages.NOT_LLM_NODE.format(node=node))
@@ -304,19 +460,6 @@ def _install_error_handlers(app: FastAPI) -> None:
 
 
 _DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
-_DEMO_FLAGS = frozenset({"1", "true", "yes", "on"})
-
-
-def _demo_enabled() -> bool:
-    return os.environ.get("MARS_DEMO", "").strip().lower() in _DEMO_FLAGS
-
-
-def _step_delay(demo: bool) -> float:
-    raw = os.environ.get("MARS_DEMO_DELAY", "0.35" if demo else "0")
-    try:
-        return max(0.0, float(raw))
-    except ValueError:
-        return 0.0
 
 
 def _mount_frontend(app: FastAPI) -> None:
@@ -343,30 +486,26 @@ def create_app(
     store: NodeConfigStore | None = None,
     llm_adapter: object | None = None,
     artifacts: RunArtifactStore | None = None,
+    secrets: SecretStore | None = None,
 ) -> FastAPI:
     """装配 API；允许测试注入假 LLM 适配器、运行管理器与数据目录。"""
     node_configs = store or NodeConfigStore()
-    demo = _demo_enabled() and llm_adapter is None
-    adapter = (
-        llm_adapter
-        if llm_adapter is not None
-        else (DemoAdapter(profile=os.environ.get("MARS_DEMO_PROFILE", "default")) if demo else None)
-    )
+    secret_store = secrets or SecretStore()
     artifact_store = artifacts or (manager.artifacts if manager is not None else None)
     if artifact_store is None:
         artifact_store = RunArtifactStore(load_settings().data_dir)
     runner = manager
     if runner is None:
         graph = build_graph(gate_factory=make_gate, checkpointer=build_checkpointer())
-        runner = RunManager(graph, llm_adapter=adapter, artifacts=artifact_store)
+        runner = RunManager(graph, llm_adapter=llm_adapter, artifacts=artifact_store)
 
     app = FastAPI(title="MARS-Graph", version="0.1.0")
     app.state.manager = runner
     app.state.node_configs = node_configs
     app.state.artifacts = artifact_store
+    app.state.secrets = secret_store
+    app.state.llm_adapter = llm_adapter
     app.state.data_dir = str(artifact_store.root)
-    app.state.demo = demo
-    app.state.step_delay = _step_delay(demo)
     app.add_middleware(
         CORSMiddleware,
         allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",

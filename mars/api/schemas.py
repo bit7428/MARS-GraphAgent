@@ -184,3 +184,49 @@ class NodeConfigUpdate(BaseModel):
     timeout_s: float | None = Field(default=None, gt=0.0)
     max_retries: int | None = Field(default=None, ge=0, le=10)
     prompt_version: str | None = Field(default=None, pattern=r"^v\d+$")
+
+
+class SecretStatusView(BaseModel):
+    """密钥状态：只暴露是否配置与尾号，永不回传明文。"""
+
+    env_name: str
+    configured: bool
+    tail: str | None
+    source: Literal["env", "file"] | None
+    used_by: list[str]
+
+
+class SecretSetRequest(BaseModel):
+    """写入密钥请求。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    api_key: str = Field(min_length=8, max_length=512)
+
+
+class PromptView(BaseModel):
+    """某个节点的提示词模板。"""
+
+    node: str
+    version: str
+    content: str
+    versions: list[str]
+    recommended: str
+
+
+class PromptWriteRequest(BaseModel):
+    """写入或覆盖提示词模板。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: str = Field(pattern=r"^v\d+$")
+    content: str = Field(max_length=200_000)
+
+
+class ConnectionTestView(BaseModel):
+    """单节点连通性测试结果。"""
+
+    ok: bool
+    model: str
+    latency_ms: float
+    message: str

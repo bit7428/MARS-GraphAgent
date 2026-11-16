@@ -44,7 +44,6 @@ class RunRecord:
     pending_supplement: dict[str, str] | None = None
     tsc_max: int = TSC_MAX
     m_max: int = M_MAX
-    step_delay: float = 0.0
     created_at: str = ""
     finished_at: str = ""
     acceptance: str = "未验收"
@@ -80,7 +79,6 @@ class RunManager:
         name: str = "",
         tsc_max: int = TSC_MAX,
         m_max: int = M_MAX,
-        step_delay: float = 0.0,
     ) -> RunRecord:
         """创建并后台启动运行。"""
         self._validate_breakpoints(breakpoints or set())
@@ -111,7 +109,6 @@ class RunManager:
             name=resolved_name,
             tsc_max=tsc_max,
             m_max=m_max,
-            step_delay=max(0.0, step_delay),
             created_at=created_at,
         )
         self._runs[thread_id] = record
@@ -436,7 +433,6 @@ class RunManager:
             if name not in NODE_NAMES or node not in NODE_NAMES:
                 continue
             if kind == "on_chain_start":
-                await self._pace(record)
                 yield {"event": "node_start", "thread_id": record.thread_id, "node": node}
             elif kind == "on_chain_end":
                 data = cast(Mapping[str, Any], event.get("data") or {})
@@ -444,7 +440,6 @@ class RunManager:
                 partial = output if isinstance(output, dict) else {}
                 writes = [key for key in partial if key != "trace" and key in _WRITABLE_VIEW]
                 trace = partial.get("trace")
-                await self._pace(record)
                 yield {
                     "event": "node_end",
                     "thread_id": record.thread_id,
@@ -453,18 +448,12 @@ class RunManager:
                     "trace": trace[0] if isinstance(trace, list) and trace else None,
                 }
             elif kind == "on_chain_error":
-                await self._pace(record)
                 yield {
                     "event": "node_error",
                     "thread_id": record.thread_id,
                     "node": node,
                     "message": str(event.get("data")),
                 }
-
-    async def _pace(self, record: RunRecord) -> None:
-        """演示模式下放慢事件节奏，便于观察状态图动画。"""
-        if record.step_delay > 0:
-            await asyncio.sleep(record.step_delay)
 
     async def _emit(self, record: RunRecord, event: dict[str, Any]) -> None:
         async with record.changed:

@@ -2855,18 +2855,6 @@ select {
   color: var(--muted);
 }
 
-.demo-note {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
-  border-radius: 7px;
-  border: 1px dashed rgba(76, 141, 255, 0.45);
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-size: 10.5px;
-}
-
 .criteria-preview {
   display: grid;
   gap: 3px;
@@ -3132,6 +3120,82 @@ select {
   color: var(--muted);
   letter-spacing: 0.1em;
   font-size: 11px;
+}
+
+.config-section__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.secret-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.secret-state__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.secret-editor {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px dashed var(--border-strong);
+  background: var(--panel-2);
+  margin-top: 6px;
+}
+
+.secret-editor input {
+  flex: 1;
+  min-width: 200px;
+}
+
+.probe {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.probe--ok {
+  color: var(--success);
+}
+
+.probe--error {
+  color: var(--error);
+}
+
+.prompt-editor {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+  min-height: 280px;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+  resize: vertical;
+}
+
+.prompt-editor__foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 10.5px;
+  color: var(--muted);
 }
 
 .range-row {

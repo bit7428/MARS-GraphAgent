@@ -169,11 +169,34 @@ export interface CreateRunPayload {
 }
 
 export interface Meta {
-  demo: boolean;
-  step_delay: number;
   tsc_max: number;
   m_max: number;
   data_dir: string;
+  secret_path: string;
+  prompt_root: string;
+}
+
+export interface SecretStatus {
+  env_name: string;
+  configured: boolean;
+  tail: string | null;
+  source: "env" | "file" | null;
+  used_by: NodeId[];
+}
+
+export interface PromptVersionView {
+  node: NodeId;
+  version: string;
+  content: string;
+  versions: string[];
+  recommended: string;
+}
+
+export interface ConnectionTest {
+  ok: boolean;
+  model: string;
+  latency_ms: number;
+  message: string;
 }
 
 export interface RunLog {

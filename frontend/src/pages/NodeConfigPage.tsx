@@ -1,11 +1,17 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 
 import { api } from "../api/client";
-import type { NodeConfig, NodeId } from "../api/types";
+import type {
+  ConnectionTest,
+  NodeConfig,
+  NodeId,
+  PromptVersionView,
+  SecretStatus,
+} from "../api/types";
 import { Icon } from "../components/Icons";
 import { Badge, EmptyState, toast } from "../components/ui";
-import { useNodeConfigs } from "../hooks/useCatalog";
+import { useMeta, useNodeConfigs } from "../hooks/useCatalog";
 import { nodeLabel } from "../utils/format";
 
 interface FormState {
@@ -30,12 +36,29 @@ function toForm(config: NodeConfig): FormState {
   };
 }
 
+function nextVersionName(versions: string[]): string {
+  const max = versions.reduce((acc, item) => Math.max(acc, Number(item.slice(1)) || 0), 0);
+  return `v${max + 1}`;
+}
+
 export function NodeConfigPage(): ReactNode {
   const { configs, loading, error, reload } = useNodeConfigs();
+  const meta = useMeta();
   const [selected, setSelected] = useState<NodeId>("planner");
   const [form, setForm] = useState<FormState | null>(null);
   const [saving, setSaving] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
+
+  const [secrets, setSecrets] = useState<SecretStatus[]>([]);
+  const [secretEditing, setSecretEditing] = useState(false);
+  const [secretValue, setSecretValue] = useState("");
+  const [secretBusy, setSecretBusy] = useState(false);
+  const [probing, setProbing] = useState(false);
+  const [probe, setProbe] = useState<ConnectionTest | null>(null);
+
+  const [prompt, setPrompt] = useState<PromptVersionView | null>(null);
+  const [promptDraft, setPromptDraft] = useState("");
+  const [promptBusy, setPromptBusy] = useState(false);
 
   const active = useMemo(
     () => configs.find((config) => config.node === selected),
@@ -48,6 +71,45 @@ export function NodeConfigPage(): ReactNode {
       setConfirmReset(false);
     }
   }, [active]);
+
+  const loadSecrets = useCallback(async () => {
+    try {
+      setSecrets(await api.listSecrets());
+    } catch {
+      /* 密钥状态读取失败不影响主流程 */
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadSecrets();
+  }, [loadSecrets]);
+
+  const promptVersion = form?.prompt_version;
+
+  useEffect(() => {
+    if (!promptVersion) return;
+    let cancelled = false;
+    setPromptBusy(true);
+    api
+      .getPrompt(selected, promptVersion)
+      .then((view) => {
+        if (cancelled) return;
+        setPrompt(view);
+        setPromptDraft(view.content);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setPrompt(null);
+        setPromptDraft("");
+        toast(err instanceof Error ? err.message : String(err), "error");
+      })
+      .finally(() => {
+        if (!cancelled) setPromptBusy(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selected, promptVersion]);
 
   if (loading) {
     return (
@@ -99,6 +161,7 @@ export function NodeConfigPage(): ReactNode {
         prompt_version: form.prompt_version,
       });
       await reload();
+      await loadSecrets();
       toast(`${nodeLabel(active.node)} 配置已生效（新运行）`, "success");
     } catch (err) {
       toast(err instanceof Error ? err.message : String(err), "error");
@@ -122,13 +185,118 @@ export function NodeConfigPage(): ReactNode {
     }
   };
 
+  const currentSecret = secrets.find((item) => item.env_name === form?.api_key_env.trim());
+  const promptDirty = prompt ? promptDraft !== prompt.content : promptDraft.length > 0;
+  const versions = prompt?.versions ?? active?.available_versions ?? [];
+
+  const saveSecret = async () => {
+    const envName = form?.api_key_env.trim() ?? "";
+    if (!envName) {
+      toast("请先填写环境变量名", "error");
+      return;
+    }
+    if (secretValue.trim().length < 8) {
+      toast("密钥至少 8 个字符", "error");
+      return;
+    }
+    setSecretBusy(true);
+    try {
+      const status = await api.setSecret(envName, secretValue);
+      setSecrets((prev) => [...prev.filter((item) => item.env_name !== status.env_name), status]);
+      setSecretValue("");
+      setSecretEditing(false);
+      toast(`密钥已保存（尾号 ${status.tail ?? "----"}）`, "success");
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err), "error");
+    } finally {
+      setSecretBusy(false);
+    }
+  };
+
+  const clearSecret = async () => {
+    const envName = form?.api_key_env.trim() ?? "";
+    if (!envName) return;
+    setSecretBusy(true);
+    try {
+      const status = await api.clearSecret(envName);
+      setSecrets((prev) => [...prev.filter((item) => item.env_name !== status.env_name), status]);
+      setProbe(null);
+      toast("已清除该环境变量下的密钥", "info");
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err), "error");
+    } finally {
+      setSecretBusy(false);
+    }
+  };
+
+  const runProbe = async () => {
+    setProbing(true);
+    try {
+      const result = await api.testNode(selected);
+      setProbe(result);
+      toast(result.ok ? "连接正常" : "连接失败，请检查模型与密钥", result.ok ? "success" : "error");
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err), "error");
+    } finally {
+      setProbing(false);
+    }
+  };
+
+  const savePromptContent = async () => {
+    if (!form) return;
+    setPromptBusy(true);
+    try {
+      const view = await api.savePrompt(selected, form.prompt_version, promptDraft);
+      setPrompt(view);
+      setPromptDraft(view.content);
+      toast(`模板 ${selected}/${view.version} 已保存`, "success");
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err), "error");
+    } finally {
+      setPromptBusy(false);
+    }
+  };
+
+  const createPromptVersion = async () => {
+    if (!form) return;
+    const target = nextVersionName(versions);
+    setPromptBusy(true);
+    try {
+      const view = await api.savePrompt(selected, target, promptDraft);
+      setPrompt(view);
+      setPromptDraft(view.content);
+      setForm({ ...form, prompt_version: target });
+      toast(`已创建 ${target}，保存配置后生效`, "info");
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err), "error");
+    } finally {
+      setPromptBusy(false);
+    }
+  };
+
+  const removePromptVersion = async () => {
+    if (!form) return;
+    setPromptBusy(true);
+    try {
+      const view = await api.deletePrompt(selected, form.prompt_version);
+      setPrompt(view);
+      setPromptDraft(view.content);
+      setForm({ ...form, prompt_version: view.version });
+      toast(`已删除 ${form.prompt_version}`, "success");
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err), "error");
+    } finally {
+      setPromptBusy(false);
+    }
+  };
+
   return (
     <div className="page">
       <header className="page__head">
         <div>
           <h1>LLM 节点配置</h1>
           <p className="page__sub">
-            6 个 LLM 节点的接口、采样与提示词版本；运行使用启动时的配置快照，运行中修改只影响之后新建的运行
+            6 个 LLM 节点的接口、密钥、采样与系统提示词；运行使用启动时的配置快照，修改只影响之后新建的运行
           </p>
         </div>
       </header>
@@ -157,9 +325,7 @@ export function NodeConfigPage(): ReactNode {
               <div className="config-form__head">
                 <div>
                   <h2>{nodeLabel(active.node)}</h2>
-                  <p className="mono config-form__path">
-                    POST /config/nodes/{active.node}
-                  </p>
+                  <p className="mono config-form__path">POST /config/nodes/{active.node}</p>
                 </div>
                 <div className="row">
                   {dirty ? <Badge tone="warn">未保存</Badge> : <Badge tone="muted">已同步</Badge>}
@@ -217,12 +383,109 @@ export function NodeConfigPage(): ReactNode {
                       onChange={(event) => setForm({ ...form, api_key_env: event.target.value })}
                       placeholder="MARS_LLM_API_KEY"
                     />
-                    <span className="secret-mask mono" title="后端只保存环境变量名，不保存密钥">
+                    <span className="secret-mask mono" title="接口只返回尾号，不回传明文">
                       ••••••••
                     </span>
                   </div>
+                  <div className="secret-state">
+                    <Badge tone={currentSecret?.configured ? "success" : "warn"}>
+                      {currentSecret?.configured
+                        ? `已配置 ${currentSecret.tail ?? ""}`
+                        : "未配置"}
+                    </Badge>
+                    {currentSecret?.source ? (
+                      <span className="field-help">
+                        来源：{currentSecret.source === "file" ? "本地密钥文件" : "进程环境变量"}
+                      </span>
+                    ) : null}
+                    {currentSecret?.used_by?.length ? (
+                      <span className="field-help">
+                        被 {currentSecret.used_by.length} 个节点引用
+                      </span>
+                    ) : null}
+                    <span className="secret-state__actions">
+                      <button
+                        type="button"
+                        className="btn btn--ghost btn--sm"
+                        onClick={() => {
+                          setSecretEditing(true);
+                          setProbe(null);
+                        }}
+                      >
+                        <Icon name="lock" size={12} />
+                        {currentSecret?.configured ? "更换密钥" : "设置密钥"}
+                      </button>
+                      {currentSecret?.configured ? (
+                        <button
+                          type="button"
+                          className="btn btn--ghost btn--sm"
+                          onClick={clearSecret}
+                          disabled={secretBusy}
+                        >
+                          清除
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="btn btn--ghost btn--sm"
+                        onClick={runProbe}
+                        disabled={probing}
+                      >
+                        <Icon name="spark" size={12} />
+                        {probing ? "测试中…" : "测试连接"}
+                      </button>
+                    </span>
+                  </div>
+
+                  {secretEditing ? (
+                    <div className="secret-editor">
+                      <input
+                        type="password"
+                        autoComplete="off"
+                        autoFocus
+                        value={secretValue}
+                        onChange={(event) => setSecretValue(event.target.value)}
+                        placeholder="粘贴 API Key（保存后只显示尾号）"
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") void saveSecret();
+                          if (event.key === "Escape") {
+                            setSecretEditing(false);
+                            setSecretValue("");
+                          }
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="btn btn--primary btn--sm"
+                        onClick={saveSecret}
+                        disabled={secretBusy}
+                      >
+                        保存密钥
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn--ghost btn--sm"
+                        onClick={() => {
+                          setSecretEditing(false);
+                          setSecretValue("");
+                        }}
+                      >
+                        取消
+                      </button>
+                    </div>
+                  ) : null}
+
+                  {probe ? (
+                    <p className={`probe ${probe.ok ? "probe--ok" : "probe--error"}`}>
+                      <Icon name={probe.ok ? "check" : "error"} size={12} />
+                      {probe.ok
+                        ? `连通正常 · ${probe.model} · ${probe.latency_ms}ms`
+                        : `连接失败：${probe.message}`}
+                    </p>
+                  ) : null}
+
                   <p className="field-help">
-                    后端只保存变量名，密钥从进程环境读取；页面与日志永远不会显示明文
+                    密钥写入 {meta?.secret_path ?? ".mars/secrets.json"}（仅本机、权限 600），接口与日志只返回尾号
                   </p>
                 </div>
               </div>
@@ -283,11 +546,58 @@ export function NodeConfigPage(): ReactNode {
               </div>
 
               <div className="config-section">
-                <h3>提示词模板</h3>
+                <div className="config-section__head">
+                  <h3>系统提示词模板</h3>
+                  <div className="row">
+                    {promptDirty ? (
+                      <Badge tone="warn">未保存</Badge>
+                    ) : (
+                      <Badge tone="muted">已同步</Badge>
+                    )}
+                    <button
+                      type="button"
+                      className="btn btn--ghost btn--sm"
+                      onClick={() => setPromptDraft(prompt?.recommended ?? "")}
+                      disabled={!prompt?.recommended || promptBusy}
+                      title="填入符合该节点 JSON 契约的推荐模板"
+                    >
+                      <Icon name="spark" size={12} />
+                      载入推荐模板
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn--ghost btn--sm"
+                      onClick={createPromptVersion}
+                      disabled={promptBusy}
+                    >
+                      <Icon name="plus" size={12} />
+                      新建版本
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn--ghost btn--sm"
+                      onClick={removePromptVersion}
+                      disabled={promptBusy || versions.length <= 1}
+                      title={versions.length <= 1 ? "至少保留一个版本" : "删除当前版本"}
+                    >
+                      <Icon name="trash" size={12} />
+                      删除版本
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn--primary btn--sm"
+                      onClick={savePromptContent}
+                      disabled={!promptDirty || promptBusy}
+                    >
+                      {promptBusy ? "处理中…" : "保存模板"}
+                    </button>
+                  </div>
+                </div>
+
                 <div className="config-row config-row--inline">
                   <div>
                     <label className="field-label" htmlFor="prompt-version">
-                      版本
+                      编辑版本
                     </label>
                     <select
                       id="prompt-version"
@@ -296,28 +606,37 @@ export function NodeConfigPage(): ReactNode {
                         setForm({ ...form, prompt_version: event.target.value })
                       }
                     >
-                      {(active.available_versions.length
-                        ? active.available_versions
-                        : [active.prompt_version]
-                      ).map((version) => (
+                      {versions.map((version) => (
                         <option key={version} value={version}>
                           {version}
+                          {version === active.prompt_version ? "（当前使用）" : ""}
                         </option>
                       ))}
                     </select>
                   </div>
                   <div className="config-version-meta">
-                    <span className="field-help">
-                      可用版本：{active.available_versions.join("、") || "未发现"}
-                    </span>
-                    <span className="field-help">
-                      模板文件位于 mars/prompts/{active.node}/
+                    <span className="field-help">可用版本：{versions.join("、") || "未发现"}</span>
+                    <span className="field-help mono">
+                      mars/prompts/{active.node}/{form.prompt_version}.md
                     </span>
                   </div>
                 </div>
-                <p className="field-help">
-                  当前后端不提供模板正文读写接口，版本切换只改变实际加载的提示词文件
-                </p>
+
+                <textarea
+                  className="prompt-editor"
+                  rows={16}
+                  spellCheck={false}
+                  value={promptDraft}
+                  disabled={promptBusy}
+                  onChange={(event) => setPromptDraft(event.target.value)}
+                  placeholder="留空则仅依赖节点代码内的 JSON schema 校验；建议写明角色、输入、以及要求返回的 JSON 字段。"
+                />
+                <div className="prompt-editor__foot">
+                  <span>
+                    {promptDraft.split("\n").length} 行 · {promptDraft.length} 字符
+                  </span>
+                  <span>保存后立即失效缓存，下一次节点调用即生效</span>
+                </div>
               </div>
 
               <div className="config-foot">
@@ -343,8 +662,8 @@ export function NodeConfigPage(): ReactNode {
 
       <p className="config-note">
         <Icon name="clock" size={13} />
-        配置覆盖保存在进程内存，重启后回落到环境变量默认值；API Key 只从环境变量读取
-        {configs[0] ? `（当前引用 ${configs[0].api_key_env}）` : ""}
+        节点配置覆盖保存在进程内存，重启后回落到环境变量默认；密钥与提示词模板落盘到本地文件
+        {meta?.prompt_root ? `（模板目录 ${meta.prompt_root}）` : ""}
       </p>
     </div>
   );

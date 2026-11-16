@@ -1,13 +1,16 @@
 import type {
+  ConnectionTest,
   CreateRunPayload,
   DeleteRunResult,
   EdgeSpec,
   Meta,
   NodeConfig,
   NodeId,
+  PromptVersionView,
   RunLog,
   RunSnapshot,
   RunSummary,
+  SecretStatus,
 } from "./types";
 
 export class ApiError extends Error {
@@ -92,6 +95,37 @@ export const api = {
 
   resetNodeConfig: (node: NodeId) =>
     request<NodeConfig>(`/config/nodes/${node}`, { method: "DELETE" }),
+
+  listSecrets: () => request<SecretStatus[]>("/config/secrets"),
+
+  setSecret: (envName: string, apiKey: string) =>
+    request<SecretStatus>(`/config/secrets/${envName}`, {
+      method: "PUT",
+      body: JSON.stringify({ api_key: apiKey }),
+    }),
+
+  clearSecret: (envName: string) =>
+    request<SecretStatus>(`/config/secrets/${envName}`, { method: "DELETE" }),
+
+  testNode: (node: NodeId) =>
+    request<ConnectionTest>(`/config/nodes/${node}/test`, { method: "POST" }),
+
+  getPrompt: (node: NodeId, version?: string) =>
+    request<PromptVersionView>(
+      `/config/nodes/${node}/prompt${version ? `?version=${encodeURIComponent(version)}` : ""}`,
+    ),
+
+  savePrompt: (node: NodeId, version: string, content: string) =>
+    request<PromptVersionView>(`/config/nodes/${node}/prompt`, {
+      method: "PUT",
+      body: JSON.stringify({ version, content }),
+    }),
+
+  deletePrompt: (node: NodeId, version: string) =>
+    request<PromptVersionView>(
+      `/config/nodes/${node}/prompt?version=${encodeURIComponent(version)}`,
+      { method: "DELETE" },
+    ),
 };
 
 export const eventsUrl = (id: string) => `/runs/${id}/events?start_index=0`;
