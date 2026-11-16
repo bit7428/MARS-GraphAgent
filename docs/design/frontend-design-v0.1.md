@@ -729,6 +729,7 @@ L0  工作台（AppShell：左侧导航 + 顶部全局条 + 抽屉宿主 + 覆�
 ## 11. 实现变更记录（v0.1 已落地）
 
 本节记录与第 1–10 节设计的差异与落地取舍。代码位于 `frontend/`，截图位于 `docs/screenshots/`。
+截图是开发期记录，部分仍显示已移除的演示模型或演示入口，不代表当前版本能力。
 
 ### 11.1 技术栈与目录
 
@@ -771,21 +772,41 @@ FastAPI 同时提供 `/runs`（JSON）与 SPA，浏览器直接访问 `/runs` �
 - `GET /runs/{id}/report`：读取磁盘报告与最终提示词。
 - `GET /runs/{id}/log`：读取 `run.log` 末尾。
 - `DELETE /runs/{id}/data`：删除该运行的整个数据子文件夹（仅已结束运行）。
-- `GET /meta`：演示模式、默认上限，供前端提示。
+- `GET /meta`：数据目录、密钥文件路径、模板目录与默认上限。
 - `StateView` 扩展：`name`、`breakpoints`、`tsc_max`、`m_max`、`acceptance`、`finished_at`。
 - `NodeConfigView` 扩展：`available_versions`。
 - 静态托管：存在 `frontend/dist` 时挂载 `/assets` 并做 SPA 回退。
-- 演示适配器 `mars/llm/demo.py`：`MARS_DEMO=1` 时启用，可复现 TSC 2 / M 1 的成功路径与 M 超限的失败路径。
 
-### 11.5 「常规缺失」分类（对设计稿的修正）
+> **v0.3 上线变更**：演示模式（`DemoAdapter` / `MARS_DEMO` / 事件人工延迟）已整体移除，
+> 上线版本只走真实模型；前端在「无任何可用密钥」时直接阻断启动（Critic 无法产出 7/8 时
+> Manager 会因必需字段缺失触发 1 级报错，提前拦截比跑出一个终止报告更清楚）。
 
-文档把所有 2 级报错都视为「黄色警告」，但实际运行中 Planner/Teacher/Student 在早期必然读不到待选字段（3/5/6/7/8），
-Critic 进入 TSC 循环时又按设计把 3 置空。一次健康的运行会产生十余条 `E2-MISSING-*` / `E2-SCHEMA-OPTIMIZED-PROMPT`，
-若全部染黄，节点状态图将失去信号价值。
+### 11.5 条件性待选校验（v0.3 修正）
 
-落地规则：`E2-(MISSING|CONDITIONAL-MISSING)-*` 与 `E2-SCHEMA-OPTIMIZED-PROMPT` 归为**常规缺失**——
-节点保持成功色，只在抽屉/顶栏以灰色计数呈现；其余 2 级（`E2-LLM-*`、`E2-REROUTE-*`、`E2-TARGET-*` 等）仍为黄色警告。
-1 级报错不受影响。
+文档把所有 2 级报错都视为「黄色警告」，但早期实现把**所有**待选字段的缺失都报成 2 级，
+且对每个节点都套用「10/11 非 0 → 3/5/6/7/8 必须存在」的全局规则。
+实际运行中 Planner 首轮必然没有 3/5，Teacher 首轮必然没有 6/7/8，Critic 首轮必然没有 7/8，
+Critic 进入 TSC 又会按设计把 3 置空——一次健康运行会产生十余条 `E2-MISSING-*` /
+`E2-SCHEMA-OPTIMIZED-PROMPT`，节点状态图因此失去信号价值。
+
+现在按核心文档的**逐节点前提**收口校验（`mars/graph/contract.py` + `state/validate.py`）：
+
+| 节点 | 待选字段 | 触发前提 |
+| --- | --- | --- |
+| User | 1 / 4（缺失或空白） | 由 Manager 回退唤醒（`m_count > 0`） |
+| Planner | 3 / 5 | TSC 进行中（`tsc_count > 0`） |
+| Teacher | 1 / 4 | 由 Manager 唤醒 |
+| Teacher | 3 / 6 / 7 / 8 | TSC 进行中 |
+| Student | 5 | 无（Teacher 已保证存在） |
+| Critic | 2 / 7 / 8 | TSC 第二轮起 |
+
+M 回退会重置 `tsc_count` 并清空上游产物，属于文档定义的正常复位，不计为缺失。
+2/3 在循环/回退阶段被置空（`tsc_count > 0` 或 `m_count > 0`）也不再判格式错误。
+
+验收：正常路径、TSC 超限路径与 Manager 回退路径的 trace 均应为 **0 条 issues**，
+由 `mars/tests/graph/test_graph.py` 直接断言。前端仍保留「常规缺失」灰色分类，
+仅用于兼容历史数据或人工导入的异常状态；其余 2 级（`E2-LLM-*`、`E2-REROUTE-*`、
+`E2-TARGET-*` 等）仍为黄色警告，1 级报错不受影响。
 
 ### 11.6 断点改道的前端预校验（新增）
 
@@ -806,7 +827,30 @@ Critic 进入 TSC 循环时又按设计把 3 置空。一次健康的运行会�
 | 节点详情 / 日志 / 报错 / LLM 调用 | 四个抽屉 tab 与节点契约视图均正常 |
 | 历史 / 节点配置 / 浅色主题 | 正常 |
 
-### 11.8 运行数据持久化与删除（新增）
+### 11.8 密钥与提示词写入（v0.2 新增）
+
+Q5「API Key 与提示词模板的编辑边界」原结论是「只存环境变量名、模板只读」，v0.2 起改为可写：
+
+| 能力 | 实现 | 安全边界 |
+| --- | --- | --- |
+| 录入密钥 | `PUT /config/secrets/{env_name}`，写入进程环境变量 + `.mars/secrets.json` | 响应只含 `configured`/`tail`/`source`；明文永不回传，日志不记录 |
+| 密钥状态 | `GET /config/secrets` | 只返回尾号与引用节点，页面显示「已配置 ····9876」 |
+| 清除密钥 | `DELETE /config/secrets/{env_name}` | 同时弹出进程环境变量并删除文件记录 |
+| 连通性测试 | `POST /config/nodes/{node}/test` | 单条 `ping` 请求，返回 ok/耗时/错误摘要 |
+| 提示词编辑 | `GET/PUT/DELETE /config/nodes/{node}/prompt` | 版本号正则校验、路径拼接受限、写入后 `load_prompt.cache_clear()` |
+| 版本保护 | 删除时校验 | 至少保留一个版本；正在被节点使用的版本不可删除 |
+| 推荐模板 | `mars/llm/defaults.py` + 「载入推荐模板」 | 只填入编辑器，不自动落盘，避免覆盖用户已有内容 |
+
+存储位置：`<MARS_HOME 或工作目录>/.mars/secrets.json`，权限尽力设为 0600，已加入 `.gitignore`。
+优先级：进程环境变量 > 本地文件（`os.environ.setdefault`，显式 `export` 不会被覆盖）。
+
+前端交互要点：
+- 密钥输入框为 `type=password`，保存后清空内存值，只回显尾号；不提供「显示明文」。
+- 提示词编辑器为等宽字体文本域，显示行数/字符数与落盘路径，未保存时标「未保存」。
+- 「新建版本」创建 `vN+1` 并切换编辑目标，但需要「保存配置」才会让节点真正使用新版本——
+  两个动作分开，避免误把草稿版本应用到运行。
+
+### 11.9 运行数据持久化与删除（新增）
 
 - 数据目录：`data/runs/<run_id>/`，默认可由 `MARS_DATA_DIR` 覆盖。
 - 文件：`meta.json`、`run.log`、`state.json`、`report.md`、`output_prompt.txt`，失败运行额外写 `error.json`。
