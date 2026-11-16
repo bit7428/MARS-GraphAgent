@@ -7,7 +7,7 @@ from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field
 
 from mars import messages
-from mars.graph.contract import make_trace, node_contract, session_of
+from mars.graph.contract import LoopLimits, loop_limits, make_trace, node_contract, session_of
 from mars.graph.nodes.context import (
     call_structured,
     format_questions,
@@ -15,11 +15,7 @@ from mars.graph.nodes.context import (
     format_subtasks,
     truncate,
 )
-from mars.graph.state.constants import (
-    QUESTION_RESOLVED_THRESHOLD,
-    SUBTASK_DONE_THRESHOLD,
-    TSC_MAX,
-)
+from mars.graph.state.constants import QUESTION_RESOLVED_THRESHOLD, SUBTASK_DONE_THRESHOLD
 from mars.graph.state.errors import (
     E2_LLM_FAILED,
     E2_LLM_SCHEMA,
@@ -87,12 +83,14 @@ def run_critic(state: GraphState, config: RunnableConfig) -> dict[str, Any]:
     报错：缺失 3/4/5/6 为 1 级；缺失 2/7/8 为 2 级；格式不规范为 2 级。
     """
     session = session_of(config)
+    limits = loop_limits(config)
     evaluation = _evaluate(state, config)
     update, side_effects, summary = _decide(
         state,
         evaluation.subtasks,
         evaluation.questions,
         evaluation.llm_passed,
+        limits,
     )
     update["heuristic_score"] = evaluation.heuristic
     update["execution_score"] = evaluation.execution
@@ -212,6 +210,7 @@ def _decide(
     subtasks: list[Subtask],
     questions: list[Question],
     llm_passed: bool,
+    limits: LoopLimits,
 ) -> tuple[dict[str, Any], list[str], str]:
     pending = any(item["status"] == "pending" for item in subtasks)
     unresolved = any(item["status"] == "open" for item in questions)
@@ -224,12 +223,12 @@ def _decide(
     if passed:
         update["route_critic"] = "target"
         return update, [], messages.CRITIC_PASS
-    if state["tsc_count"] >= TSC_MAX:
+    if state["tsc_count"] >= limits.tsc_max:
         update["route_critic"] = "target"
         return (
             update,
             [],
-            messages.CRITIC_TSC_OVER.format(count=state["tsc_count"], maximum=TSC_MAX),
+            messages.CRITIC_TSC_OVER.format(count=state["tsc_count"], maximum=limits.tsc_max),
         )
     update["route_critic"] = "teacher"
     update["working_prompt"] = state["optimized_prompt"]
@@ -238,7 +237,7 @@ def _decide(
     return (
         update,
         ["working_prompt<-optimized_prompt", "optimized_prompt=空", "tsc_count+1"],
-        messages.CRITIC_LOOP.format(count=update["tsc_count"], maximum=TSC_MAX),
+        messages.CRITIC_LOOP.format(count=update["tsc_count"], maximum=limits.tsc_max),
     )
 
 

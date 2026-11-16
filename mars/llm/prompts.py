@@ -14,6 +14,19 @@ class PromptNotFoundError(MarsError):
     """提示词版本不存在。"""
 
 
+def list_versions(node: str) -> list[str]:
+    """列出某节点已存在的提示词版本，供前端版本下拉使用。"""
+    directory = _PROMPT_ROOT / node
+    if not directory.is_dir():
+        return []
+    versions = [
+        path.stem
+        for path in directory.iterdir()
+        if path.is_file() and _VERSION_PATTERN.match(path.stem)
+    ]
+    return sorted(versions, key=lambda item: int(item[1:]))
+
+
 @lru_cache(maxsize=64)
 def load_prompt(node: str, version: str) -> str:
     """读取 prompts/<node>/<version>.md；空文件合法。"""

@@ -6,7 +6,14 @@ from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field
 
 from mars import messages
-from mars.graph.contract import NodeSession, make_trace, node_contract, session_of
+from mars.graph.contract import (
+    LoopLimits,
+    NodeSession,
+    loop_limits,
+    make_trace,
+    node_contract,
+    session_of,
+)
 from mars.graph.nodes.context import (
     call_structured,
     format_criteria,
@@ -15,7 +22,6 @@ from mars.graph.nodes.context import (
     format_subtasks,
     truncate,
 )
-from mars.graph.state.constants import M_MAX, TSC_MAX
 from mars.graph.state.errors import (
     E2_LLM_FAILED,
     E2_MANAGER_ROUTE,
@@ -69,17 +75,18 @@ def run_manager(state: GraphState, config: RunnableConfig) -> dict[str, Any]:
     报错：缺失 2/3/5/6/7/8/9/10/11 为 1 级；格式不规范为 2 级。
     """
     session = session_of(config)
-    if state["m_count"] >= M_MAX:
-        return _force_output(session, state)
+    limits = loop_limits(config)
+    if state["m_count"] >= limits.m_max:
+        return _force_output(session, state, limits)
 
-    target, extra, model, prompt_version = _choose_target(state, config)
+    target, extra, model, prompt_version = _choose_target(state, config, limits)
     update, side_effects = _cleanup_for(state, target)
     update["m_count"] = state["m_count"] + 1
     update["route_manager"] = target
     summary = messages.MANAGER_ROLLBACK.format(
         target=target,
         count=update["m_count"],
-        maximum=M_MAX,
+        maximum=limits.m_max,
     )
     trace = make_trace(
         session,
@@ -95,11 +102,18 @@ def run_manager(state: GraphState, config: RunnableConfig) -> dict[str, Any]:
     return update
 
 
-def _force_output(session: NodeSession, state: GraphState) -> dict[str, Any]:
+def _force_output(
+    session: NodeSession,
+    state: GraphState,
+    limits: LoopLimits,
+) -> dict[str, Any]:
     trace = make_trace(
         session,
         node="manager",
-        summary=messages.MANAGER_FORCE_OUTPUT.format(count=state["m_count"], maximum=M_MAX),
+        summary=messages.MANAGER_FORCE_OUTPUT.format(
+            count=state["m_count"],
+            maximum=limits.m_max,
+        ),
         writes=("m_count",),
         side_effects=["force_output"],
     )
@@ -109,6 +123,7 @@ def _force_output(session: NodeSession, state: GraphState) -> dict[str, Any]:
 def _choose_target(
     state: GraphState,
     config: RunnableConfig,
+    limits: LoopLimits,
 ) -> tuple[ManagerTarget, list[StateIssue], str | None, str | None]:
     body = (
         f"【初始提示词】\n{truncate(state['initial_prompt'])}\n\n"
@@ -120,8 +135,8 @@ def _choose_target(
         f"{format_score('启发得分及摘要', state['heuristic_score'])}\n\n"
         f"{format_score('执行得分及摘要', state['execution_score'])}\n\n"
         f"【性能指标】\n{format_criteria(state['performance_criteria'])}\n\n"
-        f"【TSC 循环次数】{state['tsc_count']}／{TSC_MAX}\n"
-        f"【M 循环次数】{state['m_count']}／{M_MAX}\n\n"
+        f"【TSC 循环次数】{state['tsc_count']}／{limits.tsc_max}\n"
+        f"【M 循环次数】{state['m_count']}／{limits.m_max}\n\n"
         "验收未通过。请判定缺陷归属后按系统提示词约定输出 JSON。"
     )
     try:

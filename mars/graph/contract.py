@@ -10,7 +10,7 @@ from typing import Any, cast
 from langchain_core.runnables import RunnableConfig
 
 from mars.config.settings import NodeLLMConfig, default_node_config
-from mars.graph.state.constants import BUSINESS_FIELDS, NODE_NAMES
+from mars.graph.state.constants import BUSINESS_FIELDS, M_MAX, NODE_NAMES, TSC_MAX
 from mars.graph.state.errors import (
     CodingContractError,
     FatalStateError,
@@ -147,6 +147,25 @@ def session_of(config: RunnableConfig) -> NodeSession:
     if not isinstance(value, NodeSession):
         raise CodingContractError("缺少节点会话上下文")
     return value
+
+
+@dataclass(frozen=True)
+class LoopLimits:
+    """单次运行的循环上限；未注入时回落到文档默认值。"""
+
+    tsc_max: int = TSC_MAX
+    m_max: int = M_MAX
+
+
+def loop_limits(config: RunnableConfig) -> LoopLimits:
+    """读取运行级上限配置，非法值回落到默认值。"""
+    raw = configurable(config)
+    tsc = raw.get("tsc_max")
+    m = raw.get("m_max")
+    return LoopLimits(
+        tsc_max=tsc if isinstance(tsc, int) and not isinstance(tsc, bool) and tsc > 0 else TSC_MAX,
+        m_max=m if isinstance(m, int) and not isinstance(m, bool) and m > 0 else M_MAX,
+    )
 
 
 def node_llm_config(config: RunnableConfig, node: str) -> NodeLLMConfig:

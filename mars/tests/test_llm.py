@@ -24,9 +24,18 @@ def test_adapter_from_injected() -> None:
     assert adapter_from({"llm_adapter": injected}) is injected
 
 
-def test_prompt_files_are_empty_placeholders() -> None:
-    for node in ("planner", "teacher", "student", "critic", "target", "manager"):
-        assert load_prompt(node, "v1") == ""
+_PROMPT_NODES = ("planner", "teacher", "student", "critic", "target", "manager")
+_PROMPT_SECTIONS = ("角色", "职责", "职责边界", "输出规范", "约束")
+
+
+def test_prompt_files_define_node_contracts() -> None:
+    """六个 LLM 节点的系统提示词必须存在且覆盖规范要求的章节。"""
+    for node in _PROMPT_NODES:
+        text = load_prompt(node, "v1")
+        assert text.strip(), f"{node} 提示词为空"
+        for section in _PROMPT_SECTIONS:
+            assert section in text, f"{node} 提示词缺少「{section}」章节"
+        assert "JSON" in text, f"{node} 提示词未约定 JSON 输出"
 
 
 def test_prompt_version_is_validated() -> None:

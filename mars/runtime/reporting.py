@@ -9,8 +9,9 @@ def _cell(value: str) -> str:
     return value.replace("|", "\\|").replace("\r", " ").replace("\n", " ")
 
 
-def _acceptance(state: GraphState) -> str:
-    if state.get("route_manager") == "output" and state.get("m_count", 0) >= M_MAX:
+def acceptance_of(state: GraphState, *, m_max: int = M_MAX) -> str:
+    """由终态推导验收结论；供报告与运行列表共用。"""
+    if state.get("route_manager") == "output" and state.get("m_count", 0) >= m_max:
         return "未通过（M 超限/未通过验收）"
     if state.get("route_target") == "output":
         return "通过"
@@ -49,14 +50,14 @@ def _question_table(items: list[Question]) -> str:
     return "\n".join(rows)
 
 
-def render_report(state: GraphState) -> str:
+def render_report(state: GraphState, *, tsc_max: int = TSC_MAX, m_max: int = M_MAX) -> str:
     """生成 md 报告；不修改状态，不访问外部资源。"""
     tsc_count = state.get("tsc_count", 0)
     m_count = state.get("m_count", 0)
     flags: list[str] = []
-    if tsc_count >= TSC_MAX:
+    if tsc_count >= tsc_max:
         flags.append("TSC 超限")
-    if m_count >= M_MAX:
+    if m_count >= m_max:
         flags.append("M 超限")
     flag_text = f"（{'、'.join(flags)}）" if flags else ""
 
@@ -71,12 +72,12 @@ def render_report(state: GraphState) -> str:
             "",
             "## 验收结论",
             "",
-            f"{_acceptance(state)}{flag_text}",
+            f"{acceptance_of(state, m_max=m_max)}{flag_text}",
             "",
             "## 循环情况",
             "",
-            f"- TSC 循环：{tsc_count}/{TSC_MAX}",
-            f"- M 循环：{m_count}/{M_MAX}",
+            f"- TSC 循环：{tsc_count}/{tsc_max}",
+            f"- M 循环：{m_count}/{m_max}",
             "",
             "## 评分摘要",
             "",
