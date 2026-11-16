@@ -5,6 +5,8 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from mars.config.settings import NodeLLMConfig
+from mars.graph.state.constants import M_MAX, TSC_MAX
+from mars.llm.prompts import list_versions
 
 
 class CriterionDTO(BaseModel):
@@ -22,10 +24,13 @@ class RunCreateRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    name: str | None = Field(default=None, max_length=80)
     initial_prompt: str = Field(min_length=1)
     optimization_goal: str = Field(min_length=1)
     performance_criteria: list[CriterionDTO] = Field(min_length=1)
     breakpoints: list[str] = Field(default_factory=list)
+    tsc_max: int = Field(default=TSC_MAX, ge=1, le=50)
+    m_max: int = Field(default=M_MAX, ge=1, le=20)
 
 
 class RunCreated(BaseModel):
@@ -81,10 +86,55 @@ class StateView(BaseModel):
     """运行状态快照。"""
 
     thread_id: str
+    name: str
     status: str
     next: list[str]
     interrupts: list[Any]
     values: dict[str, Any]
+    breakpoints: list[str]
+    tsc_max: int
+    m_max: int
+    acceptance: str
+    created_at: str
+    finished_at: str
+
+
+class RunSummary(BaseModel):
+    """运行历史行。"""
+
+    thread_id: str
+    name: str
+    status: str
+    created_at: str
+    finished_at: str
+    tsc_max: int
+    m_max: int
+    tsc_count: int
+    m_count: int
+    acceptance: str
+    next: list[str]
+
+
+class ReportView(BaseModel):
+    """磁盘报告与最终提示词。"""
+
+    thread_id: str
+    report_md: str
+    output_prompt: str
+
+
+class LogView(BaseModel):
+    """运行日志末尾。"""
+
+    thread_id: str
+    lines: list[str]
+
+
+class DeleteRunDataView(BaseModel):
+    """删除运行数据结果。"""
+
+    thread_id: str
+    deleted: bool
 
 
 class EdgeView(BaseModel):
@@ -110,11 +160,16 @@ class NodeConfigView(BaseModel):
     timeout_s: float
     max_retries: int
     prompt_version: str
+    available_versions: list[str] = Field(default_factory=list)
 
     @classmethod
     def from_config(cls, node: str, config: NodeLLMConfig) -> "NodeConfigView":
         """由内部配置构造只读视图，不暴露密钥。"""
-        return cls(node=node, **config.model_dump())
+        return cls(
+            node=node,
+            available_versions=list_versions(node),
+            **config.model_dump(),
+        )
 
 
 class NodeConfigUpdate(BaseModel):

@@ -1,6 +1,7 @@
 """配置层：环境变量读取与节点级 LLM 配置。"""
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -46,6 +47,7 @@ class Settings(BaseSettings):
     timeout_s: float = 60.0
     max_retries: int = 2
     prompt_version: str = "v1"
+    data_dir: Path = Path("data/runs")
     node_configs: dict[str, NodeOverride] = Field(default_factory=dict)
 
     def base_node_config(self) -> NodeLLMConfig:
